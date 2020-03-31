@@ -9,8 +9,8 @@ function isRoot () {
 	fi
 }
 
-function tunAvailable () {
-	if [ ! -e /dev/net/tun ]; then
+function tapAvailable () {
+	if [ ! -e /dev/net/tap ]; then
 		return 1
 	fi
 }
@@ -90,108 +90,11 @@ function initialCheck () {
 		echo "Sorry, you need to run this as root"
 		exit 1
 	fi
-	if ! tunAvailable; then
-		echo "TUN is not available"
+	if ! tapAvailable; then
+		echo "TAP is not available"
 		exit 1
 	fi
 	checkOS
-}
-
-function installUnbound () {
-	if [[ ! -e /etc/unbound/unbound.conf ]]; then
-
-		if [[ "$OS" =~ (debian|ubuntu) ]]; then
-			apt-get install -y unbound
-
-			# Configuration
-			echo 'interface: 10.8.0.1
-access-control: 10.8.0.1/24 allow
-hide-identity: yes
-hide-version: yes
-use-caps-for-id: yes
-prefetch: yes' >> /etc/unbound/unbound.conf
-
-		elif [[ "$OS" =~ (centos|amzn) ]]; then
-			yum install -y unbound
-
-			# Configuration
-			sed -i 's|# interface: 0.0.0.0$|interface: 10.8.0.1|' /etc/unbound/unbound.conf
-			sed -i 's|# access-control: 127.0.0.0/8 allow|access-control: 10.8.0.1/24 allow|' /etc/unbound/unbound.conf
-			sed -i 's|# hide-identity: no|hide-identity: yes|' /etc/unbound/unbound.conf
-			sed -i 's|# hide-version: no|hide-version: yes|' /etc/unbound/unbound.conf
-			sed -i 's|use-caps-for-id: no|use-caps-for-id: yes|' /etc/unbound/unbound.conf
-
-		elif [[ "$OS" = "fedora" ]]; then
-			dnf install -y unbound
-
-			# Configuration
-			sed -i 's|# interface: 0.0.0.0$|interface: 10.8.0.1|' /etc/unbound/unbound.conf
-			sed -i 's|# access-control: 127.0.0.0/8 allow|access-control: 10.8.0.1/24 allow|' /etc/unbound/unbound.conf
-			sed -i 's|# hide-identity: no|hide-identity: yes|' /etc/unbound/unbound.conf
-			sed -i 's|# hide-version: no|hide-version: yes|' /etc/unbound/unbound.conf
-			sed -i 's|# use-caps-for-id: no|use-caps-for-id: yes|' /etc/unbound/unbound.conf
-
-		elif [[ "$OS" = "arch" ]]; then
-			pacman -Syu --noconfirm unbound
-
-			# Get root servers list
-			curl -o /etc/unbound/root.hints https://www.internic.net/domain/named.cache
-
-			mv /etc/unbound/unbound.conf /etc/unbound/unbound.conf.old
-
-			echo 'server:
-	use-syslog: yes
-	do-daemonize: no
-	username: "unbound"
-	directory: "/etc/unbound"
-	trust-anchor-file: trusted-key.key
-	root-hints: root.hints
-	interface: 10.8.0.1
-	access-control: 10.8.0.1/24 allow
-	port: 53
-	num-threads: 2
-	use-caps-for-id: yes
-	harden-glue: yes
-	hide-identity: yes
-	hide-version: yes
-	qname-minimisation: yes
-	prefetch: yes' > /etc/unbound/unbound.conf
-		fi
-
-		if [[ ! "$OS" =~ (fedora|centos|amzn) ]];then
-			# DNS Rebinding fix
-			echo "private-address: 10.0.0.0/8
-private-address: 172.16.0.0/12
-private-address: 192.168.0.0/16
-private-address: 169.254.0.0/16
-private-address: fd00::/8
-private-address: fe80::/10
-private-address: 127.0.0.0/8
-private-address: ::ffff:0:0/96" >> /etc/unbound/unbound.conf
-		fi
-	else # Unbound is already installed
-		echo 'include: /etc/unbound/openvpn.conf' >> /etc/unbound/unbound.conf
-
-		# Add Unbound 'server' for the OpenVPN subnet
-		echo 'server:
-interface: 10.8.0.1
-access-control: 10.8.0.1/24 allow
-hide-identity: yes
-hide-version: yes
-use-caps-for-id: yes
-prefetch: yes
-private-address: 10.0.0.0/8
-private-address: 172.16.0.0/12
-private-address: 192.168.0.0/16
-private-address: 169.254.0.0/16
-private-address: fd00::/8
-private-address: fe80::/10
-private-address: 127.0.0.0/8
-private-address: ::ffff:0:0/96' > /etc/unbound/openvpn.conf
-	fi
-
-		systemctl enable unbound
-		systemctl restart unbound
 }
 
 function installQuestions () {
@@ -221,27 +124,6 @@ function installQuestions () {
 		done
 	fi
 
-	echo ""
-	echo "Checking for IPv6 connectivity..."
-	echo ""
-	# "ping6" and "ping -6" availability varies depending on the distribution
-	if type ping6 > /dev/null 2>&1; then
-		PING6="ping6 -c3 ipv6.google.com > /dev/null 2>&1"
-	else
-		PING6="ping -6 -c3 ipv6.google.com > /dev/null 2>&1"
-	fi
-	if eval "$PING6"; then
-		echo "Your host appears to have IPv6 connectivity."
-		SUGGESTION="y"
-	else
-		echo "Your host does not appear to have IPv6 connectivity."
-		SUGGESTION="n"
-	fi
-	echo ""
-	# Ask the user if they want to enable IPv6 regardless its availability.
-	until [[ $IPV6_SUPPORT =~ (y|n) ]]; do
-		read -rp "Do you want to enable IPv6 support (NAT)? [y/n]: " -e -i $SUGGESTION IPV6_SUPPORT
-	done
 	echo ""
 	echo "What port do you want OpenVPN to listen to?"
 	echo "   1) Default: 1194"
@@ -281,51 +163,6 @@ function installQuestions () {
 			PROTOCOL="tcp"
 		;;
 	esac
-	echo ""
-	echo "What DNS resolvers do you want to use with the VPN?"
-	echo "   1) Current system resolvers (from /etc/resolv.conf)"
-	echo "   2) Self-hosted DNS Resolver (Unbound)"
-	echo "   3) Cloudflare (Anycast: worldwide)"
-	echo "   4) Quad9 (Anycast: worldwide)"
-	echo "   5) Quad9 uncensored (Anycast: worldwide)"
-	echo "   6) FDN (France)"
-	echo "   7) DNS.WATCH (Germany)"
-	echo "   8) OpenDNS (Anycast: worldwide)"
-	echo "   9) Google (Anycast: worldwide)"
-	echo "   10) Yandex Basic (Russia)"
-	echo "   11) AdGuard DNS (Russia)"
-	echo "   12) NextDNS (Worldwide)"
-	echo "   13) Custom"
-	until [[ "$DNS" =~ ^[0-9]+$ ]] && [ "$DNS" -ge 1 ] && [ "$DNS" -le 13 ]; do
-		read -rp "DNS [1-12]: " -e -i 3 DNS
-			if [[ $DNS == 2 ]] && [[ -e /etc/unbound/unbound.conf ]]; then
-				echo ""
-				echo "Unbound is already installed."
-				echo "You can allow the script to configure it in order to use it from your OpenVPN clients"
-				echo "We will simply add a second server to /etc/unbound/unbound.conf for the OpenVPN subnet."
-				echo "No changes are made to the current configuration."
-				echo ""
-
-				until [[ $CONTINUE =~ (y|n) ]]; do
-					read -rp "Apply configuration changes to Unbound? [y/n]: " -e CONTINUE
-				done
-				if [[ $CONTINUE = "n" ]];then
-					# Break the loop and cleanup
-					unset DNS
-					unset CONTINUE
-				fi
-			elif [[ $DNS == "13" ]]; then
-				until [[ "$DNS1" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
-					read -rp "Primary DNS: " -e DNS1
-				done
-				until [[ "$DNS2" =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
-					read -rp "Secondary DNS (optional): " -e DNS2
-					if [[ "$DNS2" == "" ]]; then
-						break
-					fi
-				done
-			fi
-	done
 	echo ""
 	echo "Do you want to use compression? It is not recommended since the VORACLE attack make use of it."
 	until [[ $COMPRESSION_ENABLED =~ (y|n) ]]; do
@@ -586,10 +423,8 @@ function installOpenVPN () {
 		# Set default choices so that no questions will be asked.
 		APPROVE_INSTALL=${APPROVE_INSTALL:-y}
 		APPROVE_IP=${APPROVE_IP:-y}
-		IPV6_SUPPORT=${IPV6_SUPPORT:-n}
 		PORT_CHOICE=${PORT_CHOICE:-1}
 		PROTOCOL_CHOICE=${PROTOCOL_CHOICE:-1}
-		DNS=${DNS:-1}
 		COMPRESSION_ENABLED=${COMPRESSION_ENABLED:-n}
 		CUSTOMIZE_ENC=${CUSTOMIZE_ENC:-n}
 		CLIENT=${CLIENT:-client}
@@ -606,9 +441,6 @@ function installOpenVPN () {
 
 	# Get the "public" interface from the default route
 	NIC=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
-	if [[ -z "$NIC" ]] && [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		NIC=$(ip -6 route show default | sed -ne 's/^default .* dev \([^ ]*\) .*$/\1/p')
-	fi
 
 	# $NIC can not be empty for script rm-openvpn-rules.sh
         if [[ -z "$NIC" ]]; then
@@ -727,97 +559,15 @@ function installOpenVPN () {
 
 	# Generate server.conf
 	echo "port $PORT" > /etc/openvpn/server.conf
-	if [[ "$IPV6_SUPPORT" = 'n' ]]; then
-		echo "proto $PROTOCOL" >> /etc/openvpn/server.conf
-	elif [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		echo "proto ${PROTOCOL}6" >> /etc/openvpn/server.conf
-	fi
-
-	echo "dev tun
+	echo "proto $PROTOCOL" >> /etc/openvpn/server.conf
+	echo "dev tap
 user nobody
 group $NOGROUP
 persist-key
-persist-tun
 keepalive 10 120
 topology subnet
 server 10.8.0.0 255.255.255.0
 ifconfig-pool-persist ipp.txt" >> /etc/openvpn/server.conf
-
-	# DNS resolvers
-	case $DNS in
-		1)
-			# Locate the proper resolv.conf
-			# Needed for systems running systemd-resolved
-			if grep -q "127.0.0.53" "/etc/resolv.conf"; then
-				RESOLVCONF='/run/systemd/resolve/resolv.conf'
-			else
-				RESOLVCONF='/etc/resolv.conf'
-			fi
-			# Obtain the resolvers from resolv.conf and use them for OpenVPN
-			grep -v '#' $RESOLVCONF | grep 'nameserver' | grep -E -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | while read -r line; do
-				echo "push \"dhcp-option DNS $line\"" >> /etc/openvpn/server.conf
-			done
-		;;
-		2)
-			echo 'push "dhcp-option DNS 10.8.0.1"' >> /etc/openvpn/server.conf
-		;;
-		3) # Cloudflare
-			echo 'push "dhcp-option DNS 1.0.0.1"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 1.1.1.1"' >> /etc/openvpn/server.conf
-		;;
-		4) # Quad9
-			echo 'push "dhcp-option DNS 9.9.9.9"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 149.112.112.112"' >> /etc/openvpn/server.conf
-		;;
-		5) # Quad9 uncensored
-			echo 'push "dhcp-option DNS 9.9.9.10"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 149.112.112.10"' >> /etc/openvpn/server.conf
-		;;
-		6) # FDN
-			echo 'push "dhcp-option DNS 80.67.169.40"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 80.67.169.12"' >> /etc/openvpn/server.conf
-		;;
-		7) # DNS.WATCH
-			echo 'push "dhcp-option DNS 84.200.69.80"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 84.200.70.40"' >> /etc/openvpn/server.conf
-		;;
-		8) # OpenDNS
-			echo 'push "dhcp-option DNS 208.67.222.222"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 208.67.220.220"' >> /etc/openvpn/server.conf
-		;;
-		9) # Google
-			echo 'push "dhcp-option DNS 8.8.8.8"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 8.8.4.4"' >> /etc/openvpn/server.conf
-		;;
-		10) # Yandex Basic
-			echo 'push "dhcp-option DNS 77.88.8.8"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 77.88.8.1"' >> /etc/openvpn/server.conf
-		;;
-		11) # AdGuard DNS
-			echo 'push "dhcp-option DNS 176.103.130.130"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 176.103.130.131"' >> /etc/openvpn/server.conf
-		;;
-		12) # NextDNS
-			echo 'push "dhcp-option DNS 45.90.28.167"' >> /etc/openvpn/server.conf
-			echo 'push "dhcp-option DNS 45.90.30.167"' >> /etc/openvpn/server.conf
-		;;
-		13) # Custom DNS
-		echo "push \"dhcp-option DNS $DNS1\"" >> /etc/openvpn/server.conf
-		if [[ "$DNS2" != "" ]]; then
-			echo "push \"dhcp-option DNS $DNS2\"" >> /etc/openvpn/server.conf
-		fi
-		;;
-	esac
-	echo 'push "redirect-gateway def1 bypass-dhcp"' >> /etc/openvpn/server.conf
-
-	# IPv6 network settings if needed
-	if [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		echo 'server-ipv6 fd42:42:42:42::/112
-tun-ipv6
-push tun-ipv6
-push "route-ipv6 2000::/3"
-push "redirect-gateway ipv6"' >> /etc/openvpn/server.conf
-	fi
 
 	if [[ $COMPRESSION_ENABLED == "y"  ]]; then
 		echo "compress $COMPRESSION_ALG" >> /etc/openvpn/server.conf
@@ -857,9 +607,7 @@ verb 3" >> /etc/openvpn/server.conf
 
 	# Enable routing
 	echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.d/20-openvpn.conf
-	if [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.d/20-openvpn.conf
-	fi
+	
 	# Apply sysctl rules
 	sysctl --system
 
@@ -908,42 +656,24 @@ verb 3" >> /etc/openvpn/server.conf
 		systemctl restart openvpn@server
 	fi
 
-	if [[ $DNS == 2 ]];then
-		installUnbound
-	fi
-
 	# Add iptables rules in two scripts
 	mkdir -p /etc/iptables
 
 	# Script to add rules
 	echo "#!/bin/sh
 iptables -t nat -I POSTROUTING 1 -s 10.8.0.0/24 -o $NIC -j MASQUERADE
-iptables -I INPUT 1 -i tun0 -j ACCEPT
-iptables -I FORWARD 1 -i $NIC -o tun0 -j ACCEPT
-iptables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
+iptables -I INPUT 1 -i tap0 -j ACCEPT
+iptables -I FORWARD 1 -i $NIC -o tap0 -j ACCEPT
+iptables -I FORWARD 1 -i tap0 -o $NIC -j ACCEPT
 iptables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" > /etc/iptables/add-openvpn-rules.sh
-
-	if [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		echo "ip6tables -t nat -I POSTROUTING 1 -s fd42:42:42:42::/112 -o $NIC -j MASQUERADE
-ip6tables -I INPUT 1 -i tun0 -j ACCEPT
-ip6tables -I FORWARD 1 -i $NIC -o tun0 -j ACCEPT
-ip6tables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT" >> /etc/iptables/add-openvpn-rules.sh
-	fi
 
 	# Script to remove rules
 	echo "#!/bin/sh
 iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o $NIC -j MASQUERADE
-iptables -D INPUT -i tun0 -j ACCEPT
-iptables -D FORWARD -i $NIC -o tun0 -j ACCEPT
-iptables -D FORWARD -i tun0 -o $NIC -j ACCEPT
+iptables -D INPUT -i tap0 -j ACCEPT
+iptables -D FORWARD -i $NIC -o tap0 -j ACCEPT
+iptables -D FORWARD -i tap0 -o $NIC -j ACCEPT
 iptables -D INPUT -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" > /etc/iptables/rm-openvpn-rules.sh
-
-	if [[ "$IPV6_SUPPORT" = 'y' ]]; then
-		echo "ip6tables -t nat -D POSTROUTING -s fd42:42:42:42::/112 -o $NIC -j MASQUERADE
-ip6tables -D INPUT -i tun0 -j ACCEPT
-ip6tables -D FORWARD -i $NIC -o tun0 -j ACCEPT
-ip6tables -D FORWARD -i tun0 -o $NIC -j ACCEPT" >> /etc/iptables/rm-openvpn-rules.sh
-	fi
 
 	chmod +x /etc/iptables/add-openvpn-rules.sh
 	chmod +x /etc/iptables/rm-openvpn-rules.sh
@@ -982,11 +712,10 @@ WantedBy=multi-user.target" > /etc/systemd/system/iptables-openvpn.service
 		echo "proto tcp-client" >> /etc/openvpn/client-template.txt
 	fi
 	echo "remote $IP $PORT
-dev tun
+dev tap
 resolv-retry infinite
 nobind
 persist-key
-persist-tun
 remote-cert-tls server
 verify-x509-name $SERVER_NAME name
 auth $HMAC_ALG
@@ -995,7 +724,6 @@ cipher $CIPHER
 tls-client
 tls-version-min 1.2
 tls-cipher $CC_CIPHER
-setenv opt block-outside-dns # Prevent Windows 10 DNS leak
 verb 3" >> /etc/openvpn/client-template.txt
 
 if [[ $COMPRESSION_ENABLED == "y"  ]]; then
@@ -1126,42 +854,6 @@ function revokeClient () {
 	echo "Certificate for client $CLIENT revoked."
 }
 
-function removeUnbound () {
-	# Remove OpenVPN-related config
-	sed -i 's|include: \/etc\/unbound\/openvpn.conf||' /etc/unbound/unbound.conf
-	rm /etc/unbound/openvpn.conf
-	systemctl restart unbound
-
-	until [[ $REMOVE_UNBOUND =~ (y|n) ]]; do
-		echo ""
-		echo "If you were already using Unbound before installing OpenVPN, I removed the configuration related to OpenVPN."
-		read -rp "Do you want to completely remove Unbound? [y/n]: " -e REMOVE_UNBOUND
-	done
-
-	if [[ "$REMOVE_UNBOUND" = 'y' ]]; then
-		# Stop Unbound
-		systemctl stop unbound
-
-		if [[ "$OS" =~ (debian|ubuntu) ]]; then
-			apt-get autoremove --purge -y unbound
-		elif [[ "$OS" = 'arch' ]]; then
-			pacman --noconfirm -R unbound
-		elif [[ "$OS" =~ (centos|amzn) ]]; then
-			yum remove -y unbound
-		elif [[ "$OS" = 'fedora' ]]; then
-			dnf remove -y unbound
-		fi
-
-		rm -rf /etc/unbound/
-
-		echo ""
-		echo "Unbound removed!"
-	else
-		echo ""
-		echo "Unbound wasn't removed."
-	fi
-}
-
 function removeOpenVPN () {
 	echo ""
 	# shellcheck disable=SC2034
@@ -1226,10 +918,6 @@ function removeOpenVPN () {
 		rm -f /etc/sysctl.d/20-openvpn.conf
 		rm -rf /var/log/openvpn
 
-		# Unbound
-		if [[ -e /etc/unbound/openvpn.conf ]]; then
-			removeUnbound
-		fi
 		echo ""
 		echo "OpenVPN removed!"
 	else
@@ -1270,7 +958,7 @@ function manageMenu () {
 	esac
 }
 
-# Check for root, TUN, OS...
+# Check for root, TAP, OS...
 initialCheck
 
 # Check if OpenVPN is already installed
