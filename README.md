@@ -1,5 +1,9 @@
 # openvpn-install
 
+Форк https://github.com/angristan/openvpn-install, сделанный для простой L2 сети, а не L3
+
+Выпилен дефолтный маршрут, выпилен DNS, tun заменён на tap для возможности маршрутизации
+
 OpenVPN installer for Debian, Ubuntu, Fedora, CentOS and Arch Linux.
 
 This script will let you setup your own secure VPN server in just a few seconds.
